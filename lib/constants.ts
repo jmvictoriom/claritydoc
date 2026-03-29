@@ -1,6 +1,6 @@
 import type { ContractType } from "@/types/analysis";
 
-export const MAX_FILE_SIZE = 10 * 1024 * 1024; // 10MB
+export const MAX_FILE_SIZE = 30 * 1024 * 1024; // 30MB
 export const MAX_TEXT_LENGTH = 100_000;
 export const MIN_TEXT_LENGTH = 200;
 export const MAX_REQUESTS_PER_HOUR = 5;
