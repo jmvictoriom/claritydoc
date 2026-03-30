@@ -1,10 +1,8 @@
-import { GoogleGenerativeAI } from "@google/generative-ai";
+import { geminiCLI } from "./gemini-cli";
 import { SYSTEM_PROMPT } from "./prompts/system-prompt";
 import { buildAnalysisPrompt } from "./prompts/analysis-prompt";
 import { contractAnalysisSchema } from "./prompts/types";
 import type { ContractAnalysis, ContractType } from "@/types/analysis";
-
-const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY!);
 
 export async function analyzeContract(
   contractText: string,
@@ -12,35 +10,22 @@ export async function analyzeContract(
 ): Promise<ContractAnalysis> {
   const userPrompt = buildAnalysisPrompt(contractText, contractType);
 
-  const model = genAI.getGenerativeModel({
-    model: "gemini-2.5-flash",
-    systemInstruction: SYSTEM_PROMPT,
-    generationConfig: {
-      temperature: 0.1,
-      maxOutputTokens: 16000,
-      responseMimeType: "application/json",
-    },
-  });
+  // Combine system + user prompt for CLI (no separate system instruction)
+  const fullPrompt = `${SYSTEM_PROMPT}\n\n---\n\n${userPrompt}`;
 
-  const result = await model.generateContent(userPrompt);
-  const responseText = result.response.text();
+  const responseText = await geminiCLI(fullPrompt);
+
+  // Extract JSON from the response — the model might wrap it in markdown code blocks
+  const jsonText = extractJSON(responseText);
 
   let json: unknown;
   try {
-    json = JSON.parse(responseText);
+    json = JSON.parse(jsonText);
   } catch {
-    // Retry once if JSON is invalid
-    const chat = model.startChat({
-      history: [
-        { role: "user", parts: [{ text: userPrompt }] },
-        { role: "model", parts: [{ text: responseText }] },
-      ],
-    });
-
-    const retry = await chat.sendMessage(
-      "Tu respuesta anterior no es JSON valido. Responde UNICAMENTE con el objeto JSON especificado en las instrucciones del sistema, sin texto adicional.",
-    );
-    json = JSON.parse(retry.response.text());
+    // Retry once asking for clean JSON
+    const retryPrompt = `${SYSTEM_PROMPT}\n\n---\n\nTu respuesta anterior no fue JSON valido. Aqui estaba tu respuesta:\n\n${responseText.slice(0, 2000)}\n\nResponde UNICAMENTE con el objeto JSON especificado en las instrucciones. Sin texto adicional, sin markdown, sin code blocks. Solo JSON puro.`;
+    const retryText = await geminiCLI(retryPrompt);
+    json = JSON.parse(extractJSON(retryText));
   }
 
   const analysis = contractAnalysisSchema.parse(json);
@@ -49,4 +34,23 @@ export async function analyzeContract(
     ...analysis,
     fechaAnalisis: new Date().toISOString(),
   } as ContractAnalysis;
+}
+
+/**
+ * Extract JSON from a response that might be wrapped in ```json ... ``` blocks
+ * or contain extra text before/after the JSON object.
+ */
+function extractJSON(text: string): string {
+  // Try to extract from markdown code block
+  const codeBlockMatch = text.match(/```(?:json)?\s*\n?([\s\S]*?)\n?```/);
+  if (codeBlockMatch) return codeBlockMatch[1].trim();
+
+  // Try to find a JSON object directly
+  const firstBrace = text.indexOf("{");
+  const lastBrace = text.lastIndexOf("}");
+  if (firstBrace !== -1 && lastBrace > firstBrace) {
+    return text.slice(firstBrace, lastBrace + 1);
+  }
+
+  return text.trim();
 }
